@@ -14,7 +14,7 @@ import org.jetbrains.kotlin.psi.KtFunction
  * that are in source, but not converted/supported by light classes (e.g., due to the presence of @JvmSynthetic).
  * To keep the semantics of [UastFakeSourceLightMethod], here we introduce a dummy abstraction as a placeholder.
  */
-internal class UastFakeDeserializedLightMethod(
+internal class UastFakeDeserializedSourceLightMethod(
     private val original: KtFunction,
     containingClass: PsiClass,
 ) : UastFakeSourceLightMethod(original, containingClass) {

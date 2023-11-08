@@ -4,6 +4,7 @@ package org.jetbrains.uast.kotlin.internal
 
 import com.intellij.openapi.project.Project
 import com.intellij.psi.*
+import com.intellij.psi.impl.file.impl.JavaFileManager
 import com.intellij.psi.util.PsiTypesUtil
 import org.jetbrains.kotlin.analysis.api.*
 import org.jetbrains.kotlin.analysis.api.calls.KtCallableMemberCall
@@ -25,7 +26,8 @@ import org.jetbrains.kotlin.psi.psiUtil.containingClass
 import org.jetbrains.kotlin.type.MapPsiToAsmDesc
 import org.jetbrains.uast.*
 import org.jetbrains.uast.kotlin.*
-import org.jetbrains.uast.kotlin.psi.UastFakeDeserializedLightMethod
+import org.jetbrains.uast.kotlin.psi.UastFakeDeserializedSourceLightMethod
+import org.jetbrains.uast.kotlin.psi.UastFakeDeserializedSymbolLightMethod
 import org.jetbrains.uast.kotlin.psi.UastFakeSourceLightMethod
 import org.jetbrains.uast.kotlin.psi.UastFakeSourceLightPrimaryConstructor
 
@@ -81,7 +83,47 @@ internal fun toPsiMethod(
     context: KtElement,
 ): PsiMethod? {
     return when (val psi = psiForUast(functionSymbol, context.project)) {
-        null -> null
+        null -> {
+            // `inline` from binary dependency, which we can't find source PSI, so fake it
+            if (functionSymbol.origin == KtSymbolOrigin.LIBRARY && (functionSymbol as? KtFunctionSymbol)?.isInline == true) {
+                val containingSymbol = functionSymbol.getContainingSymbol()
+                if (containingSymbol != null) {
+                    if (containingSymbol is KtClassLikeSymbol) {
+                        // class member
+                        (psiForUast(containingSymbol, context.project) as? PsiClass)?.let { containingClass ->
+                            UastFakeDeserializedSymbolLightMethod(
+                                functionSymbol.createPointer(),
+                                functionSymbol.name.identifier,
+                                containingClass,
+                                context
+                            )
+                        }
+                    } else {
+                        // local
+                        null
+                    }
+                } else {
+                    // top-level declaration
+                    val callableId = functionSymbol.callableIdIfNonLocal ?: return null
+                    val packageName = callableId.packageName.asString()
+                    val callableName = callableId.callableName.identifier
+                    val javaFileManager = context.project.getServiceIfCreated(JavaFileManager::class.java)
+                    val classesInPackage = javaFileManager?.findPackage(packageName)?.classes
+                    classesInPackage?.find { psiClass ->
+                        // TODO: this may not pick the correct corresponding facade class.
+                        psiClass.name?.endsWith("Kt") == true &&
+                            psiClass.children.filterIsInstance<PsiMember>().none { psiMember -> psiMember.name == callableName }
+                    }?.let { maybeFacade ->
+                        UastFakeDeserializedSymbolLightMethod(
+                            functionSymbol.createPointer(),
+                            functionSymbol.name.identifier,
+                            maybeFacade,
+                            context
+                        )
+                    }
+                }
+            } else null
+        }
         is PsiMethod -> psi
         is KtClassOrObject -> {
             // For synthetic members in enum classes, `psi` points to their containing enum class.
@@ -135,7 +177,7 @@ private fun toPsiMethodForDeserialized(
             else
                 methods.filter { it.name == psi.name }
         return when (candidates.size) {
-            0 -> if (fake) UastFakeDeserializedLightMethod(psi, this) else null
+            0 -> if (fake) UastFakeDeserializedSourceLightMethod(psi, this) else null
             1 -> candidates.single()
             else -> {
                 candidates.firstOrNull { it.desc == desc(functionSymbol, it, context) } ?: candidates.first()
